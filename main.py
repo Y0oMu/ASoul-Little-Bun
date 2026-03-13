@@ -566,7 +566,7 @@ class ASoulLittleBun(QWidget):
     def show_about(self):
         """显示关于对话框"""
         about_text = """
-<h2>枝江小馒头 v1.0.1</h2>
+<h2>枝江小馒头 v1.0.2</h2>
 <p><b>By：</b>Evelynal</p>
 <p><b>B站：</b><a href="https://space.bilibili.com/33374590">伊芙琳娜</a></p>
 <p><b>开源地址：</b><a href="https://github.com/Evelynall/ASoul-Little-Bun/">ASoul-Little-Bun</a></p>
