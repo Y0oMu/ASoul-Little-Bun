@@ -28,8 +28,13 @@ class ASoulLittleBun(QWidget):
             self.current_character_index = character_list.index(last_character)
         else:
             # 如果没有保存的角色或角色不存在，使用第一个角色
-            self.current_character_index = 0
-            self.current_character = list(self.characters.keys())[0] if self.characters else None
+            if self.characters:
+                self.current_character_index = 0
+                self.current_character = list(self.characters.keys())[0]
+            else:
+                # 如果没有任何角色，设置为None
+                self.current_character_index = 0
+                self.current_character = None
         
         # 加载当前角色的配置
         self.load_character_settings()
@@ -147,6 +152,8 @@ class ASoulLittleBun(QWidget):
     def load_character_settings(self):
         """加载当前角色的配置"""
         if not self.current_character:
+            # 如果没有角色，创建一个默认的Settings实例
+            self.settings = Settings('default', 'img')
             return
         
         character_folder = os.path.join('img', self.current_character)
@@ -579,7 +586,7 @@ class ASoulLittleBun(QWidget):
     def show_about(self):
         """显示关于对话框"""
         about_text = """
-<h2>枝江小馒头 v1.0.2</h2>
+<h2>枝江小馒头 v1.1.0</h2>
 <p><b>By：</b>Evelynal</p>
 <p><b>B站：</b><a href="https://space.bilibili.com/33374590">伊芙琳娜</a></p>
 <p><b>开源地址：</b><a href="https://github.com/Evelynall/ASoul-Little-Bun/">ASoul-Little-Bun</a></p>
