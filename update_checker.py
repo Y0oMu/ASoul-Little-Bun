@@ -3,8 +3,47 @@ import requests
 import os
 import shutil
 from PyQt6.QtWidgets import QMessageBox, QDialog, QVBoxLayout, QTextBrowser, QPushButton, QHBoxLayout
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from packaging import version as pkg_version
+
+
+class UpdateCheckThread(QThread):
+    """异步更新检查线程"""
+    update_found = pyqtSignal(str, str, list)  # 当前版本, 最新版本, 更新日志
+    check_failed = pyqtSignal()
+    
+    def __init__(self, checker, local_version, global_settings):
+        super().__init__()
+        self.checker = checker
+        self.local_version = local_version
+        self.global_settings = global_settings
+    
+    def run(self):
+        """在后台线程中执行更新检查"""
+        try:
+            remote_version = self.checker.get_remote_version()
+            
+            if remote_version is None:
+                self.check_failed.emit()
+                return
+            
+            # 检查是否跳过此版本
+            if self.global_settings:
+                skipped_version = self.global_settings.get('skipped_update_version')
+                if skipped_version == remote_version:
+                    print(f"ℹ️ 已跳过版本 {remote_version} 的更新提示")
+                    return
+            
+            # 比较版本
+            if pkg_version.parse(remote_version) > pkg_version.parse(self.local_version):
+                # 获取更新日志
+                changelogs = self.checker.get_changelogs_between_versions(
+                    self.local_version, remote_version
+                )
+                self.update_found.emit(self.local_version, remote_version, changelogs)
+        except Exception as e:
+            print(f"更新检查线程异常: {e}")
+            self.check_failed.emit()
 
 
 class UpdateChecker:
@@ -14,18 +53,7 @@ class UpdateChecker:
         self.github_release_url = "https://github.com/Evelynall/ASoul-Little-Bun/releases/"
         self.lanzou_url = "https://evelynal.lanzoum.com/b0j1b6kdg"
         self.lanzou_password = "asoul"
-        self.changelogs_dir = "changelogs"  # 本地更新日志目录
-    
-    def clean_local_changelogs(self):
-        """清理本地更新日志文件夹"""
-        try:
-            if os.path.exists(self.changelogs_dir):
-                shutil.rmtree(self.changelogs_dir)
-                print(f"✅ 已清理本地更新日志: {self.changelogs_dir}")
-            else:
-                print(f"ℹ️ 本地更新日志目录不存在，无需清理")
-        except Exception as e:
-            print(f"⚠️ 清理本地更新日志失败: {e}")
+        self.check_thread = None
         
     def get_local_version(self):
         """获取本地版本号"""
@@ -150,33 +178,24 @@ class UpdateChecker:
             return []
     
     def check_for_updates(self, parent=None, global_settings=None):
-        """检查更新并显示对话框"""
+        """异步检查更新（不阻塞UI）"""
         local_version = self.get_local_version()
-        remote_version = self.get_remote_version()
         
-        if remote_version is None:
-            return False
+        # 创建后台线程进行更新检查
+        self.check_thread = UpdateCheckThread(self, local_version, global_settings)
         
-        try:
-            if pkg_version.parse(remote_version) > pkg_version.parse(local_version):
-                # 检查是否跳过此版本
-                if global_settings:
-                    skipped_version = global_settings.get('skipped_update_version')
-                    if skipped_version == remote_version:
-                        print(f"ℹ️ 已跳过版本 {remote_version} 的更新提示")
-                        return False
-                
-                # 获取更新日志
-                changelogs = self.get_changelogs_between_versions(local_version, remote_version)
-                
-                # 显示更新对话框
-                self.show_update_dialog(local_version, remote_version, changelogs, parent, global_settings)
-                return True
-            else:
-                return False
-        except Exception as e:
-            print(f"版本比较失败: {e}")
-            return False
+        # 连接信号
+        self.check_thread.update_found.connect(
+            lambda current, latest, logs: self.show_update_dialog(
+                current, latest, logs, parent, global_settings
+            )
+        )
+        self.check_thread.check_failed.connect(
+            lambda: print("更新检查失败或无需更新")
+        )
+        
+        # 启动线程
+        self.check_thread.start()
     
     def show_update_dialog(self, current_ver, latest_ver, changelogs, parent=None, global_settings=None):
         """显示更新对话框"""

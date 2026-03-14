@@ -933,8 +933,6 @@ class ASoulLittleBun(QOpenGLWidget):
         """检查更新"""
         try:
             checker = UpdateChecker()
-            # 启动时自动清理本地更新日志文件夹
-            checker.clean_local_changelogs()
             # 检查更新，传递 global_settings 以支持跳过版本功能
             checker.check_for_updates(self, self.global_settings)
         except Exception as e:
