@@ -130,6 +130,12 @@ class Settings:
                     loaded = json.load(f)
                     settings = self.DEFAULT_SETTINGS.copy()
                     settings.update(loaded)
+                    
+                    # 验证关键配置项，确保键盘动画能正常工作
+                    if settings.get('keyboard_press_offset', 0) <= 0:
+                        print(f"警告: {self.character_name}的keyboard_press_offset配置异常，使用默认值")
+                        settings['keyboard_press_offset'] = self.DEFAULT_SETTINGS['keyboard_press_offset']
+                    
                     return settings
             except Exception as e:
                 print(f"加载{self.character_name}配置失败: {e}")

@@ -2,21 +2,23 @@ import sys
 import os
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QMenu, QDialog, QSystemTrayIcon, QMessageBox
 from PyQt6.QtCore import Qt, QTimer, QPoint, QPropertyAnimation, QEasingCurve, QRect
-from PyQt6.QtGui import QPixmap, QPainter, QCursor, QAction, QIcon
+from PyQt6.QtGui import QPixmap, QPainter, QCursor, QAction, QIcon, QSurfaceFormat
+from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from pynput import keyboard, mouse
 from settings import Settings, GlobalSettings, SettingsDialog
 
 
-class ASoulLittleBun(QWidget):
+class ASoulLittleBun(QOpenGLWidget):
     def __init__(self):
         super().__init__()
         # 加载全局设置
         self.global_settings = GlobalSettings()
         
-        # 窗口状态设置（默认置顶、不穿透、不隐藏任务栏）
+        # 窗口状态设置（默认置顶、不穿透、隐藏任务栏、不锁定鼠标）
         self.always_on_top = self.global_settings.get('always_on_top', True)
         self.mouse_passthrough = self.global_settings.get('mouse_passthrough', False)
-        self.hide_taskbar = self.global_settings.get('hide_taskbar', False)
+        self.hide_taskbar = self.global_settings.get('hide_taskbar', True)
+        self.mouse_locked = self.global_settings.get('mouse_locked', False)
         
         self.characters = self.load_characters()
         
@@ -54,6 +56,12 @@ class ASoulLittleBun(QWidget):
         self.mouse_offset_y = 0
         self.max_mouse_offset = self.settings.get('max_mouse_offset')
         self.mouse_sensitivity = self.settings.get('mouse_sensitivity')
+        
+        # 鼠标位置突变过滤相关
+        self.mouse_jump_threshold = 100  # 超过此距离视为突变（像素）
+        self.mouse_velocity_x = 0  # 鼠标速度（用于平滑）
+        self.mouse_velocity_y = 0
+        self.velocity_smoothing = 0.3  # 速度平滑系数（0-1，越小越平滑）
         
         # 键盘动画相关
         self.keyboard_offset_y = 0
@@ -124,6 +132,33 @@ class ASoulLittleBun(QWidget):
         # 更新托盘菜单以同步勾选状态
         self.create_tray_menu()
     
+    def toggle_mouse_locked(self):
+        """切换鼠标锁定状态"""
+        self.mouse_locked = not self.mouse_locked
+        self.global_settings.set('mouse_locked', self.mouse_locked)
+        self.global_settings.save()
+        
+        # 如果锁定鼠标，重置鼠标偏移和速度到中心位置
+        if self.mouse_locked:
+            self.mouse_offset_x = 0
+            self.mouse_offset_y = 0
+            self.mouse_velocity_x = 0
+            self.mouse_velocity_y = 0
+            base_x = self.settings.get('mouse_x')
+            base_y = self.settings.get('mouse_y')
+            mouse_width = self.settings.get('mouse_width')
+            mouse_height = self.settings.get('mouse_height')
+            self.mouse_label.setGeometry(base_x, base_y, mouse_width, mouse_height)
+            self.left_click_label.setGeometry(base_x, base_y, mouse_width, mouse_height)
+            self.right_click_label.setGeometry(base_x, base_y, mouse_width, mouse_height)
+        else:
+            # 解锁时也重置速度，避免突然的移动
+            self.mouse_velocity_x = 0
+            self.mouse_velocity_y = 0
+        
+        # 更新托盘菜单以同步勾选状态
+        self.create_tray_menu()
+    
     def apply_mouse_passthrough(self):
         """应用鼠标穿透设置到窗口和所有子控件"""
         if self.mouse_passthrough:
@@ -158,6 +193,28 @@ class ASoulLittleBun(QWidget):
         
         character_folder = os.path.join('img', self.current_character)
         self.settings = Settings(self.current_character, character_folder)
+        
+        # 验证并修复配置
+        config_changed = False
+        
+        # 检查keyboard_press_offset
+        if self.settings.get('keyboard_press_offset', 0) <= 0:
+            print(f"修复配置: {self.current_character}的keyboard_press_offset设置为默认值5")
+            self.settings.set('keyboard_press_offset', 5)
+            config_changed = True
+        
+        # 检查其他关键配置
+        critical_keys = ['keyboard_x', 'keyboard_y', 'keyboard_width', 'keyboard_height']
+        for key in critical_keys:
+            if self.settings.get(key) is None:
+                print(f"修复配置: {self.current_character}的{key}缺失，使用默认值")
+                self.settings.set(key, Settings.DEFAULT_SETTINGS[key])
+                config_changed = True
+        
+        # 如果配置被修改，保存到文件
+        if config_changed:
+            self.settings.save()
+            print(f"已自动修复{self.current_character}的配置文件")
     
     def init_tray(self):
         """初始化系统托盘"""
@@ -215,27 +272,38 @@ class ASoulLittleBun(QWidget):
         
         tray_menu.addSeparator()
         
-        # 窗口状态开关
+        # 窗口设置二级菜单
+        window_settings_menu = tray_menu.addMenu('窗口设置')
+        
         # 置顶开关
         always_on_top_action = QAction('窗口置顶', self)
         always_on_top_action.setCheckable(True)
         always_on_top_action.setChecked(self.always_on_top)
         always_on_top_action.triggered.connect(self.toggle_always_on_top)
-        tray_menu.addAction(always_on_top_action)
+        window_settings_menu.addAction(always_on_top_action)
         
         # 鼠标穿透开关
         mouse_passthrough_action = QAction('鼠标穿透', self)
         mouse_passthrough_action.setCheckable(True)
         mouse_passthrough_action.setChecked(self.mouse_passthrough)
         mouse_passthrough_action.triggered.connect(self.toggle_mouse_passthrough)
-        tray_menu.addAction(mouse_passthrough_action)
+        window_settings_menu.addAction(mouse_passthrough_action)
         
         # 隐藏任务栏开关
         hide_taskbar_action = QAction('隐藏任务栏 (OBS不可识别)', self)
         hide_taskbar_action.setCheckable(True)
         hide_taskbar_action.setChecked(self.hide_taskbar)
         hide_taskbar_action.triggered.connect(self.toggle_hide_taskbar)
-        tray_menu.addAction(hide_taskbar_action)
+        window_settings_menu.addAction(hide_taskbar_action)
+        
+        tray_menu.addSeparator()
+        
+        # 锁定鼠标开关
+        mouse_locked_action = QAction('锁定鼠标', self)
+        mouse_locked_action.setCheckable(True)
+        mouse_locked_action.setChecked(self.mouse_locked)
+        mouse_locked_action.triggered.connect(self.toggle_mouse_locked)
+        tray_menu.addAction(mouse_locked_action)
         
         tray_menu.addSeparator()
         
@@ -296,6 +364,7 @@ class ASoulLittleBun(QWidget):
             
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, self.always_on_top)
         
         # 设置窗口标题以便OBS识别
         self.setWindowTitle("ASoul Little Bun")
@@ -352,6 +421,18 @@ class ASoulLittleBun(QWidget):
         # 根据设置决定是否隐藏任务栏
         if self.hide_taskbar:
             self.hide_from_taskbar()
+        
+        # 显示首次启动提示（只显示一次）
+        self.show_first_launch_tip()
+    
+    def paintEvent(self, event):
+        """重写 paintEvent 以支持 OpenGL 渲染和透明背景"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        # 填充透明背景
+        painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        painter.end()
     
     def load_characters(self):
         """自动识别img目录下的角色文件夹"""
@@ -501,6 +582,11 @@ class ASoulLittleBun(QWidget):
         kb_width = self.settings.get('keyboard_width')
         kb_height = self.settings.get('keyboard_height')
         
+        # 调试信息：检查配置是否正确加载
+        if press_offset is None or press_offset <= 0:
+            print(f"警告: 键盘按下偏移量异常 (press_offset={press_offset})，角色: {self.current_character}")
+            press_offset = 5  # 使用默认值
+        
         self.keyboard_animation = QPropertyAnimation(self.keyboard_label, b"geometry")
         self.keyboard_animation.setDuration(50)
         self.keyboard_animation.setStartValue(self.keyboard_label.geometry())
@@ -543,14 +629,36 @@ class ASoulLittleBun(QWidget):
         self.right_click_label.hide()
     
     def update_mouse_position(self):
-        """更新鼠标同步移动"""
+        """更新鼠标同步移动（带突变过滤和平滑处理）"""
+        # 如果鼠标被锁定，不更新位置
+        if self.mouse_locked:
+            return
+        
         current_pos = QCursor.pos()
         delta_x = current_pos.x() - self.last_mouse_pos.x()
         delta_y = current_pos.y() - self.last_mouse_pos.y()
         
-        # 更新鼠标偏移，限制在最大范围内
-        self.mouse_offset_x += delta_x * self.mouse_sensitivity
-        self.mouse_offset_y += delta_y * self.mouse_sensitivity
+        # 计算移动距离
+        distance = (delta_x ** 2 + delta_y ** 2) ** 0.5
+        
+        # 过滤突变：如果移动距离超过阈值，视为游戏重置鼠标位置，忽略此次移动
+        if distance > self.mouse_jump_threshold:
+            # 更新最后位置但不应用移动
+            self.last_mouse_pos = current_pos
+            return
+        
+        # 使用速度平滑算法，避免抽搐
+        # 计算目标速度
+        target_velocity_x = delta_x * self.mouse_sensitivity
+        target_velocity_y = delta_y * self.mouse_sensitivity
+        
+        # 平滑过渡到目标速度
+        self.mouse_velocity_x += (target_velocity_x - self.mouse_velocity_x) * self.velocity_smoothing
+        self.mouse_velocity_y += (target_velocity_y - self.mouse_velocity_y) * self.velocity_smoothing
+        
+        # 应用平滑后的速度
+        self.mouse_offset_x += self.mouse_velocity_x
+        self.mouse_offset_y += self.mouse_velocity_y
         
         # 限制偏移范围
         self.mouse_offset_x = max(-self.max_mouse_offset, min(self.max_mouse_offset, self.mouse_offset_x))
@@ -574,6 +682,10 @@ class ASoulLittleBun(QWidget):
         self.mouse_offset_x *= 0.95
         self.mouse_offset_y *= 0.95
         
+        # 速度衰减（回归中心时速度也要衰减）
+        self.mouse_velocity_x *= 0.95
+        self.mouse_velocity_y *= 0.95
+        
         self.last_mouse_pos = current_pos
 
     def open_settings(self):
@@ -586,7 +698,7 @@ class ASoulLittleBun(QWidget):
     def show_about(self):
         """显示关于对话框"""
         about_text = """
-<h2>枝江小馒头 v1.0.3</h2>
+<h2>枝江小馒头 v1.0.4</h2>
 <p><b>By：</b>Evelynal</p>
 <p><b>B站：</b><a href="https://space.bilibili.com/33374590">伊芙琳娜</a></p>
 <p><b>开源地址：</b><a href="https://github.com/Evelynall/ASoul-Little-Bun/">ASoul-Little-Bun</a></p>
@@ -652,27 +764,38 @@ class ASoulLittleBun(QWidget):
         
         menu.addSeparator()
         
-        # 窗口状态开关
+        # 窗口设置二级菜单
+        window_settings_menu = menu.addMenu('窗口设置')
+        
         # 置顶开关
         always_on_top_action = QAction('窗口置顶', self)
         always_on_top_action.setCheckable(True)
         always_on_top_action.setChecked(self.always_on_top)
         always_on_top_action.triggered.connect(self.toggle_always_on_top)
-        menu.addAction(always_on_top_action)
+        window_settings_menu.addAction(always_on_top_action)
         
         # 鼠标穿透开关
         mouse_passthrough_action = QAction('鼠标穿透', self)
         mouse_passthrough_action.setCheckable(True)
         mouse_passthrough_action.setChecked(self.mouse_passthrough)
         mouse_passthrough_action.triggered.connect(self.toggle_mouse_passthrough)
-        menu.addAction(mouse_passthrough_action)
+        window_settings_menu.addAction(mouse_passthrough_action)
         
         # 隐藏任务栏开关
         hide_taskbar_action = QAction('隐藏任务栏 (OBS不可识别)', self)
         hide_taskbar_action.setCheckable(True)
         hide_taskbar_action.setChecked(self.hide_taskbar)
         hide_taskbar_action.triggered.connect(self.toggle_hide_taskbar)
-        menu.addAction(hide_taskbar_action)
+        window_settings_menu.addAction(hide_taskbar_action)
+        
+        menu.addSeparator()
+        
+        # 锁定鼠标开关
+        mouse_locked_action = QAction('锁定鼠标', self)
+        mouse_locked_action.setCheckable(True)
+        mouse_locked_action.setChecked(self.mouse_locked)
+        mouse_locked_action.triggered.connect(self.toggle_mouse_locked)
+        menu.addAction(mouse_locked_action)
         
         menu.addSeparator()
         
@@ -771,6 +894,37 @@ class ASoulLittleBun(QWidget):
         else:
             self.show_in_taskbar()
     
+    def show_first_launch_tip(self):
+        """显示首次启动提示（只显示一次）"""
+        # 检查是否已经显示过提示
+        if not self.global_settings.get('first_launch_tip_shown', False):
+            tip_text = """
+<h3>OBS 识别提示</h3>
+<p>当前默认启用了<b>隐藏任务栏</b>模式，在此模式下 OBS 无法识别此窗口。</p>
+<br>
+<p><b>如需 OBS 识别窗口，请按以下步骤操作：</b></p>
+<p>1. 右键点击窗口或托盘图标，取消勾选<b>"隐藏任务栏"</b>选项</p>
+<p>2. 在 OBS 中使用<b>游戏捕获</b>源，选择窗口<b>"ASoul Little Bun"</b></p>
+<p>3. 在捕获设置中勾选<b>"允许窗口透明"</b>选项</p>
+<br>
+<p>此提示仅显示一次。</p>
+            """
+            
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("使用提示")
+            msg_box.setText(tip_text)
+            msg_box.setTextFormat(Qt.TextFormat.RichText)
+            msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg_box.setIcon(QMessageBox.Icon.Information)
+            msg_box.setMinimumWidth(450)
+            
+            # 显示对话框
+            msg_box.exec()
+            
+            # 标记为已显示
+            self.global_settings.set('first_launch_tip_shown', True)
+            self.global_settings.save()
+    
     def closeEvent(self, event):
         """关闭事件 - 停止监听器和定时器"""
         # 保存窗口位置到全局配置
@@ -839,6 +993,17 @@ class ASoulLittleBun(QWidget):
 
 
 if __name__ == '__main__':
+    # 设置 OpenGL 渲染以支持 OBS 游戏捕获
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseDesktopOpenGL)
+    
+    # 配置 OpenGL 表面格式
+    fmt = QSurfaceFormat()
+    fmt.setVersion(3, 3)  # OpenGL 3.3
+    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
+    fmt.setSwapBehavior(QSurfaceFormat.SwapBehavior.DoubleBuffer)
+    fmt.setSamples(4)  # 4x 抗锯齿
+    QSurfaceFormat.setDefaultFormat(fmt)
+    
     app = QApplication(sys.argv)
     pet = ASoulLittleBun()
     sys.exit(app.exec())
