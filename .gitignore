@@ -118,3 +118,7 @@ Thumbs.db
 # Project specific
 config.json
 global_config.json
+
+
+# Version control - DO NOT IGNORE
+# version.json should be tracked
